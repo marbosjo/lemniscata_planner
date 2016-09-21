@@ -25,7 +25,13 @@
 
     ros::Publisher plan_pub_;
     ros::Publisher plan_poses_pub_;
+    ros::Publisher lemniscata_pub_;
     bool initialized_;
+    
+    std::vector<geometry_msgs::PoseStamped> current_lemniscata_;
+    geometry_msgs::PoseStamped current_goal_;
+    size_t current_subgoal_index_;
+
  public:
 
   LemniscataPlanner();
@@ -33,6 +39,8 @@
 
   /** overridden classes from interface nav_core::BaseGlobalPlanner **/
   void initialize(std::string name, costmap_2d::Costmap2DROS* costmap_ros);
+  void generateLemniscata(const geometry_msgs::PoseStamped& goal, std::vector<geometry_msgs::PoseStamped>& lemniscata);
+
   bool makePlan(const geometry_msgs::PoseStamped& start,
                 const geometry_msgs::PoseStamped& goal,
                 std::vector<geometry_msgs::PoseStamped>& plan
