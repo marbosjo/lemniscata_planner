@@ -11,7 +11,7 @@ using namespace std;
 //Default Constructor
 namespace lemniscata_planner {
 
-    bool comparePoseStamped(const geometry_msgs::PoseStamped &p, const geometry_msgs::PoseStamped &q)
+    bool arePoseStampedEqual(const geometry_msgs::PoseStamped &p, const geometry_msgs::PoseStamped &q)
     {
         return (p.pose.position.x == q.pose.position.x) &&
         (p.pose.position.y == q.pose.position.y) &&
@@ -30,28 +30,58 @@ namespace lemniscata_planner {
         initialize(name, costmap_ros);
     }
 
+    LemniscataPlanner::~LemniscataPlanner()
+    {
+        if (dyn_rec_)
+            delete dyn_rec_;
+    }
+
 
     void LemniscataPlanner::initialize(std::string name, costmap_2d::Costmap2DROS* costmap_ros){
         plan_pub_ = private_nh_.advertise<nav_msgs::Path>("plan", 1);
         plan_poses_pub_ = private_nh_.advertise<geometry_msgs::PoseArray>("plan_poses", 1);
         lemniscata_pub_ = private_nh_.advertise<nav_msgs::Path>("lemniscata", 1);
+
+        dyn_rec_ = new dynamic_reconfigure::Server<lemniscata_planner::LemniscataConfig>(ros::NodeHandle("~/lemniscata_planner"));
+        dyn_rec_callback_ = boost::bind(&LemniscataPlanner::reconfigureCallback, this, _1, _2);
+        dyn_rec_->setCallback(dyn_rec_callback_);
+        
+        alpha_ = 3.0;
+        beta_ = 3.0;
+        sampling_points_ = 20;
+        path_size_ = 5;
+        keep_goal_orientation_ = false;
+        
         initialized_ = true;
+        must_regenerate_lemniscata_ = true;
+
     }
+
+    void LemniscataPlanner::reconfigureCallback(LemniscataConfig& config, uint32_t level)
+    {
+        alpha_ = config.alpha;
+        beta_ = config.beta;
+        sampling_points_ = config.sampling_points;
+        path_size_ = config.path_size;
+        keep_goal_orientation_ = config.keep_goal_orientation;
+
+        must_regenerate_lemniscata_ = true;
+    }
+
 
     void LemniscataPlanner::generateLemniscata(const geometry_msgs::PoseStamped& goal, std::vector<geometry_msgs::PoseStamped>& lemniscata)
     {
-        ROS_INFO("Generate Lemniscata");
-        double alpha = 3;
-        size_t sampling_points = 20;
+        //double alpha = 3;
+        //size_t sampling_points = 20;
 
         double initial_yaw = tf::getYaw(goal.pose.orientation);
 
-        lemniscata.resize(sampling_points);
-        for (size_t i = 0; i < sampling_points; i++) {
-            double t = i*2.0*M_PI/(sampling_points-1);
+        lemniscata.resize(sampling_points_);
+        for (size_t i = 0; i < sampling_points_; i++) {
+            double t = i*2.0*M_PI/(sampling_points_-1);
            
-            double lemniscata_x = alpha * std::sqrt(2.0) * std::cos(t) / (std::pow(std::sin(t), 2.0) + 1.0);
-            double lemniscata_y = alpha * std::sqrt(2.0) * std::cos(t) * std::sin(t) / (std::pow(std::sin(t), 2.0) + 1);
+            double lemniscata_x = alpha_ * std::sqrt(2.0) * std::cos(t) / (std::pow(std::sin(t), 2.0) + 1.0);
+            double lemniscata_y = beta_ * std::sqrt(2.0) * std::cos(t) * std::sin(t) / (std::pow(std::sin(t), 2.0) + 1);
             
             lemniscata[i].header.frame_id = goal.header.frame_id; 
             lemniscata[i].pose.position.x = goal.pose.position.x + std::cos(initial_yaw) * lemniscata_x - std::sin(initial_yaw) * lemniscata_y;
@@ -59,19 +89,30 @@ namespace lemniscata_planner {
 
         }
 
-        for (size_t i = 0; i < sampling_points; i++) {
-            size_t next = (i + 1) % sampling_points;
-            double yaw = std::atan2(lemniscata[next].pose.position.y - lemniscata[i].pose.position.y, lemniscata[next].pose.position.x - lemniscata[i].pose.position.x);
-            lemniscata[i].pose.orientation = tf::createQuaternionMsgFromYaw(yaw);
+        for (size_t i = 0; i < sampling_points_; i++) {
+            if (keep_goal_orientation_) {
+                lemniscata[i].pose.orientation = goal.pose.orientation;
+            }
+            else { // orientation smooth orientation
+                size_t next = (i + 1) % sampling_points_;
+                double yaw = std::atan2(lemniscata[next].pose.position.y - lemniscata[i].pose.position.y, lemniscata[next].pose.position.x - lemniscata[i].pose.position.x);
+                lemniscata[i].pose.orientation = tf::createQuaternionMsgFromYaw(yaw);
+            }
         }
+
+        must_regenerate_lemniscata_ = false;
     }
 
     bool LemniscataPlanner::makePlan(const geometry_msgs::PoseStamped& start, const geometry_msgs::PoseStamped& goal,  std::vector<geometry_msgs::PoseStamped>& plan )
     {
-        if (!comparePoseStamped(goal, current_goal_)) {
+        if (!arePoseStampedEqual(goal, current_goal_)) {
             current_goal_ = goal;
-
+            must_regenerate_lemniscata_ = true;
+        }
+        
+        if (must_regenerate_lemniscata_) {
             generateLemniscata(current_goal_, current_lemniscata_);
+
             size_t closest_point_to_start_index = 0;
             double closest_distance_to_start = std::numeric_limits<double>::max();
 
@@ -95,9 +136,9 @@ namespace lemniscata_planner {
         }
 
 
-        size_t plan_size = 5;
-        plan.resize(plan_size);
-        for (size_t i = 0; i < plan_size; i++) {
+//        size_t plan_size = 5;
+        plan.resize(path_size_);
+        for (size_t i = 0; i < path_size_; i++) {
             size_t idx = (current_subgoal_index_ + i) % current_lemniscata_.size();
             plan[i] = current_lemniscata_[idx];
         }
@@ -124,12 +165,6 @@ namespace lemniscata_planner {
         
         if(!path.empty())
         {
-//            gui_path.header.frame_id = path[0].header.frame_id;
-//            gui_path.header.stamp = path[0].header.stamp;
-//
-//            poses_path.header.frame_id = path[0].header.frame_id;
-//            poses_path.header.stamp = path[0].header.stamp;
-
             gui_path.header = path[0].header;
             poses_path.header = path[0].header;
             lemniscata_path.header = path[0].header;
